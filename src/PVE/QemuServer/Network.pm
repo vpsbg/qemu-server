@@ -137,12 +137,36 @@ our $netdesc = {
 
 PVE::JSONSchema::register_standard_option("pve-qm-net", $netdesc);
 
+sub verify_ipconfig_address_list {
+    my ($value, $noerr, $format, $family) = @_;
+
+    my @addresses = split(/;/, $value, -1);
+    if (!@addresses || grep { $_ eq '' } @addresses) {
+        return if $noerr;
+        die "invalid $family address list\n";
+    }
+
+    if (@addresses > 1 && grep { $_ =~ /^(?:auto|dhcp)$/ } @addresses) {
+        return if $noerr;
+        die "$family address list cannot combine static addresses with auto or dhcp\n";
+    }
+
+    for my $address (@addresses) {
+        eval { PVE::JSONSchema::check_format($format, $address, '') };
+        if (my $err = $@) {
+            return if $noerr;
+            die $err;
+        }
+    }
+
+    return $value;
+}
+
 my $ipconfig_fmt = {
     ip => {
         type => 'string',
-        format => 'pve-ipv4-config',
-        format_description => 'IPv4Format/CIDR',
-        description => 'IPv4 address in CIDR format.',
+        format_description => 'IPv4Format/CIDR[;IPv4Format/CIDR...]',
+        description => 'IPv4 address(es) in CIDR format.',
         optional => 1,
         default => 'dhcp',
     },
@@ -156,9 +180,8 @@ my $ipconfig_fmt = {
     },
     ip6 => {
         type => 'string',
-        format => 'pve-ipv6-config',
-        format_description => 'IPv6Format/CIDR',
-        description => 'IPv6 address in CIDR format.',
+        format_description => 'IPv6Format/CIDR[;IPv6Format/CIDR...]',
+        description => 'IPv6 address(es) in CIDR format.',
         optional => 1,
         default => 'dhcp',
     },
@@ -172,6 +195,15 @@ my $ipconfig_fmt = {
     },
 };
 PVE::JSONSchema::register_format('pve-qm-ipconfig', $ipconfig_fmt);
+
+sub ipconfig_addresses {
+    my ($ipconfig, $key) = @_;
+
+    return if !defined($ipconfig->{$key});
+
+    return split(/;/, $ipconfig->{$key}, -1);
+}
+
 our $ipconfigdesc = {
     optional => 1,
     type => 'string',
@@ -180,6 +212,7 @@ our $ipconfigdesc = {
 cloud-init: Specify IP addresses and gateways for the corresponding interface.
 
 IP addresses use CIDR notation, gateways are optional but need an IP of the same type specified.
+Multiple static addresses for the same address family can be separated with semicolons.
 
 The special string 'dhcp' can be used for IP addresses to use DHCP, in which case no explicit
 gateway should be provided.
@@ -207,7 +240,7 @@ sub parse_net {
     return $res;
 }
 
-# ipconfigX ip=cidr,gw=ip,ip6=cidr,gw6=ip
+# ipconfigX ip=cidr[;cidr...],gw=ip,ip6=cidr[;cidr...],gw6=ip
 sub parse_ipconfig {
     my ($data) = @_;
 
@@ -215,6 +248,21 @@ sub parse_ipconfig {
     if ($@) {
         warn $@;
         return;
+    }
+
+    if (defined(my $ip = $res->{ip})) {
+        eval { verify_ipconfig_address_list($ip, 0, 'pve-ipv4-config', 'IPv4') };
+        if ($@) {
+            warn $@;
+            return;
+        }
+    }
+    if (defined(my $ip6 = $res->{ip6})) {
+        eval { verify_ipconfig_address_list($ip6, 0, 'pve-ipv6-config', 'IPv6') };
+        if ($@) {
+            warn $@;
+            return;
+        }
     }
 
     if ($res->{gw} && !$res->{ip}) {
@@ -229,7 +277,8 @@ sub parse_ipconfig {
         warn 'gateway specified together with DHCP';
         return;
     }
-    if ($res->{gw6} && $res->{ip6} !~ /^$IPV6RE/) {
+    my ($ip6) = ipconfig_addresses($res, 'ip6');
+    if ($res->{gw6} && $ip6 !~ /^$IPV6RE/) {
         # gw6 + auto/dhcp
         warn "IPv6 gateway specified together with $res->{ip6} address";
         return;
