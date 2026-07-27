@@ -177,6 +177,12 @@ sub split_ip4 {
     return ($addr, $PVE::Network::ipv4_reverse_mask->[$mask]);
 }
 
+sub ipconfig_addresses {
+    my ($ipconfig, $key) = @_;
+
+    return PVE::QemuServer::Network::ipconfig_addresses($ipconfig, $key);
+}
+
 sub configdrive2_network {
     my ($conf) = @_;
 
@@ -201,26 +207,30 @@ sub configdrive2_network {
         $id = "eth$id";
 
         $content .= "auto $id\n";
-        if ($net->{ip}) {
-            if ($net->{ip} eq 'dhcp') {
+        my @ips = ipconfig_addresses($net, 'ip');
+        for my $index (0..$#ips) {
+            my $ip = $ips[$index];
+            if ($ip eq 'dhcp') {
                 $content .= "iface $id inet dhcp\n";
             } else {
-                my ($addr, $mask) = split_ip4($net->{ip});
+                my ($addr, $mask) = split_ip4($ip);
                 $content .= "iface $id inet static\n";
                 $content .= "        address $addr\n";
                 $content .= "        netmask $mask\n";
-                $content .= "        gateway $net->{gw}\n" if $net->{gw};
+                $content .= "        gateway $net->{gw}\n" if $index == 0 && $net->{gw};
             }
         }
-        if ($net->{ip6}) {
-            if ($net->{ip6} =~ /^(auto|dhcp)$/) {
+        my @ip6s = ipconfig_addresses($net, 'ip6');
+        for my $index (0..$#ip6s) {
+            my $ip6 = $ip6s[$index];
+            if ($ip6 =~ /^(auto|dhcp)$/) {
                 $content .= "iface $id inet6 $1\n";
             } else {
-                my ($addr, $mask) = split('/', $net->{ip6});
+                my ($addr, $mask) = split('/', $ip6);
                 $content .= "iface $id inet6 static\n";
                 $content .= "        address $addr\n";
                 $content .= "        netmask $mask\n";
-                $content .= "        gateway $net->{gw6}\n" if $net->{gw6};
+                $content .= "        gateway $net->{gw6}\n" if $index == 0 && $net->{gw6};
             }
         }
     }
@@ -301,27 +311,31 @@ sub cloudbase_network_eni {
         $id = "eth$id";
 
         $content .= "auto $id\n";
-        if ($net->{ip}) {
-            if ($net->{ip} eq 'dhcp') {
+        my @ips = ipconfig_addresses($net, 'ip');
+        for my $index (0..$#ips) {
+            my $ip = $ips[$index];
+            if ($ip eq 'dhcp') {
                 $content .= "iface $id inet dhcp\n";
             } else {
-                my ($addr, $mask) = split_ip4($net->{ip});
+                my ($addr, $mask) = split_ip4($ip);
                 $content .= "iface $id inet static\n";
                 $content .= "        address $addr\n";
                 $content .= "        netmask $mask\n";
-                $content .= "        gateway $net->{gw}\n" if $net->{gw};
+                $content .= "        gateway $net->{gw}\n" if $index == 0 && $net->{gw};
                 $content .= "        dns-nameservers $nameservers\n" if $nameservers;
             }
         }
-        if ($net->{ip6}) {
-            if ($net->{ip6} =~ /^(auto|dhcp)$/) {
+        my @ip6s = ipconfig_addresses($net, 'ip6');
+        for my $index (0..$#ip6s) {
+            my $ip6 = $ip6s[$index];
+            if ($ip6 =~ /^(auto|dhcp)$/) {
                 $content .= "iface $id inet6 $1\n";
             } else {
-                my ($addr, $mask) = split('/', $net->{ip6});
+                my ($addr, $mask) = split('/', $ip6);
                 $content .= "iface $id inet6 static\n";
                 $content .= "        address $addr\n";
                 $content .= "        netmask $mask\n";
-                $content .= "        gateway $net->{gw6}\n" if $net->{gw6};
+                $content .= "        gateway $net->{gw6}\n" if $index == 0 && $net->{gw6};
                 $content .= "        dns-nameservers $nameservers\n" if $nameservers;
             }
         }
@@ -396,13 +410,16 @@ sub generate_opennebula {
 
         my $mac = lc $net->{hwaddr};
 
-        if ($ipconfig->{ip}) {
+        my @ips = ipconfig_addresses($ipconfig, 'ip');
+        die "opennebula cloud-init format does not support multiple IPv4 addresses per interface\n"
+            if @ips > 1;
+        if (defined(my $ip = $ips[0])) {
             $networkenabled = 1;
 
-            if ($ipconfig->{ip} eq 'dhcp') {
+            if ($ip eq 'dhcp') {
                 $content .= "${ethid}_DHCP=YES\n";
             } else {
-                my ($addr, $mask) = split_ip4($ipconfig->{ip});
+                my ($addr, $mask) = split_ip4($ip);
                 $content .= "${ethid}_IP=$addr\n";
                 $content .= "${ethid}_MASK=$mask\n";
                 $content .= "${ethid}_MAC=$mac\n";
@@ -411,14 +428,17 @@ sub generate_opennebula {
             $content .= "${ethid}_MTU=$net->{mtu}\n" if $net->{mtu};
         }
 
-        if ($ipconfig->{ip6}) {
+        my @ip6s = ipconfig_addresses($ipconfig, 'ip6');
+        die "opennebula cloud-init format does not support multiple IPv6 addresses per interface\n"
+            if @ip6s > 1;
+        if (defined(my $ip6 = $ip6s[0])) {
             $networkenabled = 1;
-            if ($ipconfig->{ip6} eq 'dhcp') {
+            if ($ip6 eq 'dhcp') {
                 $content .= "${ethid}_DHCP6=YES\n";
-            } elsif ($ipconfig->{ip6} eq 'auto') {
+            } elsif ($ip6 eq 'auto') {
                 $content .= "${ethid}_AUTO6=YES\n";
             } else {
-                my ($addr, $mask) = split('/', $ipconfig->{ip6});
+                my ($addr, $mask) = split('/', $ip6);
                 $content .= "${ethid}_IP6=$addr\n";
                 $content .= "${ethid}_MASK6=$mask\n";
                 $content .= "${ethid}_MAC6=$mac\n";
@@ -461,16 +481,18 @@ sub nocloud_network_v2 {
         $i .= '    ';
         $content .= "${i}match:\n" . "${i}    macaddress: \"$mac\"\n" . "${i}set-name: eth$id\n";
         my @addresses;
-        if (defined(my $ip = $ipconfig->{ip})) {
+        for my $ip (ipconfig_addresses($ipconfig, 'ip')) {
             if ($ip eq 'dhcp') {
                 $content .= "${i}dhcp4: true\n";
             } else {
                 push @addresses, $ip;
             }
         }
-        if (defined(my $ip = $ipconfig->{ip6})) {
+        for my $ip (ipconfig_addresses($ipconfig, 'ip6')) {
             if ($ip eq 'dhcp') {
                 $content .= "${i}dhcp6: true\n";
+            } elsif ($ip eq 'auto') {
+                $content .= "${i}accept-ra: true\n";
             } else {
                 push @addresses, $ip;
             }
@@ -531,7 +553,9 @@ sub nocloud_network {
             . "${i}  mac_address: '$mac'\n"
             . "${i}  subnets:\n";
         $i .= '  ';
-        if (defined(my $ip = $ipconfig->{ip})) {
+        my @ips = ipconfig_addresses($ipconfig, 'ip');
+        for my $index (0..$#ips) {
+            my $ip = $ips[$index];
             if ($ip eq 'dhcp') {
                 $content .= "${i}- type: dhcp4\n";
             } else {
@@ -540,12 +564,14 @@ sub nocloud_network {
                     "${i}- type: static\n"
                     . "${i}  address: '$addr'\n"
                     . "${i}  netmask: '$mask'\n";
-                if (defined(my $gw = $ipconfig->{gw})) {
+                if ($index == 0 && defined(my $gw = $ipconfig->{gw})) {
                     $content .= "${i}  gateway: '$gw'\n";
                 }
             }
         }
-        if (defined(my $ip = $ipconfig->{ip6})) {
+        my @ip6s = ipconfig_addresses($ipconfig, 'ip6');
+        for my $index (0..$#ip6s) {
+            my $ip = $ip6s[$index];
             if ($ip eq 'dhcp') {
                 $content .= "${i}- type: dhcp6\n";
             } elsif ($ip eq 'auto') {
@@ -553,7 +579,7 @@ sub nocloud_network {
                 $content .= "${i}- type: ipv6_slaac\n";
             } else {
                 $content .= "${i}- type: static6\n" . "${i}  address: '$ip'\n";
-                if (defined(my $gw = $ipconfig->{gw6})) {
+                if ($index == 0 && defined(my $gw = $ipconfig->{gw6})) {
                     $content .= "${i}  gateway: '$gw'\n";
                 }
             }
